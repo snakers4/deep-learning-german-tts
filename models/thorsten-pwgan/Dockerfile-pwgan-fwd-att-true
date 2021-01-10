@@ -18,6 +18,8 @@ LABEL url="https://thorstenmueller.github.io/deep-learning-german-tts/"
 
 EXPOSE 5002
 
+#ENV forwardattention=true
+
 # Install dependencies
 RUN mkdir /thorsten-tts
 RUN apt-get update && apt-get install -y git espeak-ng gcc build-essential
@@ -35,13 +37,14 @@ RUN gdown --id 1kf3F-Yzq5zeL4-by7hb6iqSx8sEMAEQ_ -O de_extra
 ## tacotron 2 "thorsten" model
 RUN gdown --id 1LPJwST7S8AImDcm-ZimIPdm5qKMkkR31 -O taco2-checkpoint.pth.tar
 RUN gdown --id 181tFFT1xsPPKOfNzuaOFC5lQYzlutjly -O taco2-scale-stats.npy
-RUN gdown --id 1gloiKrmcp98IjiBquspn4Gj6PoCJRrGq -O taco2-config.json
-RUN gdown --id 1gloiKrmcp98IjiBquspn4Gj6PoCJRrGq -O taco2-de-sentences.txt
+
+RUN gdown --id 1ayVWbW5P8N4DMd-A7g7j56RO53SQp0DT -O taco2-config.json
+# RUN gdown --id 1gloiKrmcp98IjiBquspn4Gj6PoCJRrGq -O taco2-config.json   # Taco2 with forward attention=false
+RUN gdown --id 1iD6cSh8fxdgfA8FswDvgah0Jby0fgHNM -O taco2-de-sentences.txt
 
 ## pwgan vocoder files
 RUN gdown --id 1cDsKr0OBLiaoHAvd_IDGEcw4w1SeHFHY -O pwgan-checkpoint.pth.tar
 RUN gdown --id 1jZTPg1nlLhq3gmwsZy6DyUluw9R5lyCe -O pwgan-config.json
-
 
 # Compile german espeak
 RUN espeak-ng --compile=de
@@ -88,15 +91,6 @@ WORKDIR /thorsten-tts/TTS
 RUN cp -r TTS mozilla_voice_tts
 
 WORKDIR /thorsten-tts/TTS/TTS/server
-
-#ARG use_cuda
-#RUN if [ "$use_cuda" = "true" ] ; then \
-#    cmd='python ./server.py --tts_checkpoint=/thorsten-tts/taco2-checkpoint.pth.tar --tts_config=/thorsten-tts/taco2-config.json --vocoder_config=/thorsten-tts/pwgan-config.json --vocoder_checkpoint=/thorsten-tts/pwgan-checkpoint.pth.tar --tts_speakers="" --use_cuda=true' ; \
-#    fi
-#RUN echo $cmd
-
-# GPU / CUDA
-#CMD python ./server.py --tts_checkpoint=/thorsten-tts/taco2-checkpoint.pth.tar --tts_config=/thorsten-tts/taco2-config.json --vocoder_config=/thorsten-tts/pwgan-config.json --vocoder_checkpoint=/thorsten-tts/pwgan-checkpoint.pth.tar --tts_speakers="" --use_cuda=true
 
 # CPU
 CMD python ./server.py --tts_checkpoint=/thorsten-tts/taco2-checkpoint.pth.tar --tts_config=/thorsten-tts/taco2-config.json --vocoder_config=/thorsten-tts/pwgan-config.json --vocoder_checkpoint=/thorsten-tts/pwgan-checkpoint.pth.tar --tts_speakers=""

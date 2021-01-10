@@ -1,0 +1,95 @@
+
+# Docker Image for free german tts (text-to-speech) based on tts server
+# vocoder: pwgan (ParallelWaveGAN)
+
+# Thanks to following guys:
+# ---
+# repodiac (https://github.com/repodiac)
+# eltocino (https://github.com/el-tocino/)
+# erogol (https://github.com/erogol/)
+# nmstoker (https://github.com/nmstoker)
+# othiele (https://discourse.mozilla.org/u/othiele/summary)
+# domcross (https://github.com/domcross/)
+
+FROM python:3.6-slim-buster
+
+LABEL maintainer="Thorsten Müller (deep-learning-german-tts@gmx.net)"
+LABEL url="https://thorstenmueller.github.io/deep-learning-german-tts/"
+
+EXPOSE 5002
+
+#ENV forwardattention=true
+
+# Install dependencies
+RUN mkdir /thorsten-tts
+RUN apt-get update && apt-get install -y git espeak-ng gcc build-essential
+RUN pip install pip setuptools wheel gdown soundfile --upgrade
+
+WORKDIR /thorsten-tts
+
+# Download needed files
+# ---------------------
+
+## german phoneme adjustments
+RUN gdown --id 1Ggb30VZXwk3kVaunlEF3aupQ3u1BECrW -O de_rules
+RUN gdown --id 1kf3F-Yzq5zeL4-by7hb6iqSx8sEMAEQ_ -O de_extra
+
+## tacotron 2 "thorsten" model
+RUN gdown --id 1LPJwST7S8AImDcm-ZimIPdm5qKMkkR31 -O taco2-checkpoint.pth.tar
+RUN gdown --id 181tFFT1xsPPKOfNzuaOFC5lQYzlutjly -O taco2-scale-stats.npy
+
+RUN gdown --id 1ayVWbW5P8N4DMd-A7g7j56RO53SQp0DT -O taco2-config.json
+RUN gdown --id 1gloiKrmcp98IjiBquspn4Gj6PoCJRrGq -O taco2-de-sentences.txt
+
+## pwgan vocoder files
+RUN gdown --id 1cDsKr0OBLiaoHAvd_IDGEcw4w1SeHFHY -O pwgan-checkpoint.pth.tar
+RUN gdown --id 1jZTPg1nlLhq3gmwsZy6DyUluw9R5lyCe -O pwgan-config.json
+
+# Compile german espeak
+RUN espeak-ng --compile=de
+
+# Clone Mozilla TTS repo
+# ----------------------
+RUN git clone -b dev https://github.com/mozilla/TTS
+WORKDIR /thorsten-tts/TTS
+RUN git checkout 4cfde34
+
+# Clone and install german cleaner by @repodiac 
+# ---------------------------------------------
+WORKDIR /thorsten-tts
+RUN git clone https://github.com/repodiac/german_transliterate
+WORKDIR /thorsten-tts/german_transliterate
+RUN pip install -e .
+
+# Adjust code for german phoneme cleaning
+# ---------------------------------------
+WORKDIR /thorsten-tts/TTS/TTS/tts/utils/text
+RUN sed '/import re/a from german_transliterate.core import GermanTransliterate' cleaners.py >> cleaners-new.py
+RUN mv cleaners-new.py cleaners.py
+RUN echo "\ndef german_phoneme_cleaners(text):" >> cleaners.py
+RUN echo "\treturn GermanTransliterate(replace={';': ',', ':': ' '}, sep_abbreviation=' -- ').transliterate(text)" >> cleaners.py
+
+# Modify Mozilla TTS files and exec setup
+# ---------------------------------------
+
+# Adjust server.py
+WORKDIR /thorsten-tts/TTS/TTS/server
+RUN sed '/import os/a import sys' server.py > server_tmp1.py
+RUN sed '/import sys/a sys.path.append("/thorsten-tts/TTS/")' server_tmp1.py > server_tmp2.py
+RUN cp server_tmp2.py server.py
+
+# Adjust scale_stats path in taco2 config
+RUN sed -i 's/scale_stats.npy/\/thorsten-tts\/taco2-scale-stats.npy/g' /thorsten-tts/taco2-config.json
+
+WORKDIR /thorsten-tts/TTS/
+RUN pip install -r requirements.txt
+RUN python setup.py install
+
+# Dirty workaround needed after huge code/directory refactoring
+WORKDIR /thorsten-tts/TTS
+RUN cp -r TTS mozilla_voice_tts
+
+WORKDIR /thorsten-tts/TTS/TTS/server
+
+# CPU
+CMD python ./server.py --tts_checkpoint=/thorsten-tts/taco2-checkpoint.pth.tar --tts_config=/thorsten-tts/taco2-config.json --vocoder_config=/thorsten-tts/pwgan-config.json --vocoder_checkpoint=/thorsten-tts/pwgan-checkpoint.pth.tar --tts_speakers=""
