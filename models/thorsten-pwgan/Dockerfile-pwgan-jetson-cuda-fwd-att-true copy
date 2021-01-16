@@ -1,0 +1,121 @@
+# Docker Image for free german tts (text-to-speech) based on tts server
+# vocoder: pwgan (ParallelWaveGAN)
+
+# Thanks to following guys:
+# ---
+# repodiac (https://github.com/repodiac)
+# eltocino (https://github.com/el-tocino/)
+# erogol (https://github.com/erogol/)
+# nmstoker (https://github.com/nmstoker)
+# othiele (https://discourse.mozilla.org/u/othiele/summary)
+# domcross (https://github.com/domcross/)
+
+#FROM nvcr.io/nvidia/l4t-pytorch:r32.4.4-pth1.6-py3
+FROM nvcr.io/nvidia/l4t-tensorflow:r32.4.4-tf2.3-py3
+
+LABEL maintainer="Thorsten Müller (deep-learning-german-tts@gmx.net)"
+LABEL url="https://thorstenmueller.github.io/deep-learning-german-tts/"
+
+EXPOSE 5002
+
+ENV LC_ALL C.UTF-8
+ENV PYTHONIOENCODING utf-8
+
+# Install dependencies
+RUN mkdir /thorsten-tts
+RUN apt-get update && apt-get install -y git espeak-ng gcc build-essential python3.6 python3-pip libffi-dev apt-utils
+RUN pip3 install pip setuptools wheel gdown soundfile wheel-filename --upgrade
+
+WORKDIR /thorsten-tts
+
+RUN wget -O torch-1.7.0-cp36-cp36m-linux_aarch64.whl https://nvidia.box.com/shared/static/cs3xn3td6sfgtene6jdvsxlr366m2dhq.whl
+RUN pip3 install torch-1.7.0-cp36-cp36m-linux_aarch64.whl
+
+
+# Download needed files
+# ---------------------
+
+## german phoneme adjustments
+RUN gdown --id 1Ggb30VZXwk3kVaunlEF3aupQ3u1BECrW -O de_rules
+RUN gdown --id 1kf3F-Yzq5zeL4-by7hb6iqSx8sEMAEQ_ -O de_extra
+
+## tacotron 2 "thorsten" model
+RUN gdown --id 1LPJwST7S8AImDcm-ZimIPdm5qKMkkR31 -O taco2-checkpoint.pth.tar
+RUN gdown --id 181tFFT1xsPPKOfNzuaOFC5lQYzlutjly -O taco2-scale-stats.npy
+
+RUN gdown --id 1ayVWbW5P8N4DMd-A7g7j56RO53SQp0DT -O taco2-config.json
+# RUN gdown --id 1gloiKrmcp98IjiBquspn4Gj6PoCJRrGq -O taco2-config.json   # Taco2 with forward attention=false
+RUN gdown --id 1iD6cSh8fxdgfA8FswDvgah0Jby0fgHNM -O taco2-de-sentences.txt
+
+## pwgan vocoder files
+RUN gdown --id 1cDsKr0OBLiaoHAvd_IDGEcw4w1SeHFHY -O pwgan-checkpoint.pth.tar
+RUN gdown --id 1jZTPg1nlLhq3gmwsZy6DyUluw9R5lyCe -O pwgan-config.json
+
+# Compile german espeak
+RUN espeak-ng --compile=de
+
+# Clone Mozilla TTS repo
+# ----------------------
+RUN git clone -b dev https://github.com/mozilla/TTS
+WORKDIR /thorsten-tts/TTS
+RUN git checkout 4cfde34
+
+# Clone and install german cleaner by @repodiac
+# ---------------------------------------------
+WORKDIR /thorsten-tts
+RUN git clone https://github.com/repodiac/german_transliterate
+WORKDIR /thorsten-tts/german_transliterate
+RUN pip3 install -e .
+
+
+# Adjust code for german phoneme cleaning
+# ---------------------------------------
+WORKDIR /thorsten-tts/TTS/TTS/tts/utils/text
+RUN sed '/import re/a from german_transliterate.core import GermanTransliterate' cleaners.py >> cleaners-new.py
+RUN mv cleaners-new.py cleaners.py
+#RUN echo "\ndef german_phoneme_cleaners(text):" >> cleaners.py
+#RUN echo "\treturn GermanTransliterate(replace={';': ',', ':': ' '}, sep_abbreviation=' -- ').transliterate(text)" >> cleaners.py
+RUN echo "def german_phoneme_cleaners(text):" >> cleaners.py
+RUN echo "   return GermanTransliterate(replace={';': ',', ':': ' '}, sep_abbreviation=' -- ').transliterate(text)" >> cleaners.py
+
+# Modify Mozilla TTS files and exec setup
+# ---------------------------------------
+
+# Adjust server.py
+WORKDIR /thorsten-tts/TTS/TTS/server
+RUN sed '/import os/a import sys' server.py > server_tmp1.py
+RUN sed '/import sys/a sys.path.append("/thorsten-tts/TTS/")' server_tmp1.py > server_tmp2.py
+RUN cp server_tmp2.py server.py
+
+# Adjust scale_stats path in taco2 config
+RUN sed -i 's/scale_stats.npy/\/thorsten-tts\/taco2-scale-stats.npy/g' /thorsten-tts/taco2-config.json
+
+#RUN pip3 install --pre --extra-index-url https://developer.download.nvidia.com/compute/redist/jp/v44 tensorflow
+WORKDIR /thorsten-tts/TTS/
+
+# Remove tensorflow dependency due it's satisfied with base image
+RUN sed '/^tensorflow==/d' requirements.txt > req1.txt
+RUN sed -i 's/numba==0.48/numba==0.52/g' req1.txt
+RUN mv req1.txt requirements.txt
+
+# Install LLVM
+RUN dpkg -l | grep -i llvm
+#RUN pip3 list | grep -i llvm
+RUN apt-get install -y llvm-10 llvm-10-dev libllvm10 cmake g++ build-essential
+#RUN cp /usr/bin/llvm-config-10 /usr/bin/llvm-config
+RUN export LLVM_CONFIG=/usr/bin/llvm-config-10
+ENV LLVM_CONFIG /usr/bin/llvm-config-10
+#RUN export LD_LIBRARY_PATH=/usr/lib/llvm-10/lib/:$LD_LIBRARY_PATH
+#RUN cp -r /usr/lib/llvm-10/lib/libLL* /usr/lib/
+RUN pip3 install llvmlite
+
+RUN pip3 install -r requirements.txt
+RUN python3 setup.py install
+
+# Dirty workaround needed after huge code/directory refactoring
+WORKDIR /thorsten-tts/TTS
+RUN cp -r TTS mozilla_voice_tts
+
+WORKDIR /thorsten-tts/TTS/TTS/server
+
+CMD python3 ./server.py --tts_checkpoint=/thorsten-tts/taco2-checkpoint.pth.tar --tts_config=/thorsten-tts/taco2-config.json --vocoder_config=/thorsten-tts/pwgan-config.json --vocoder_checkpoint=/thorsten-tts/pwgan-checkpoint.pth.tar --tts_speakers="" --use_cuda=true
